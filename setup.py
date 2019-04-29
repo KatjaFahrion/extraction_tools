@@ -10,6 +10,6 @@ setup(
     packages=find_packages(),
     install_requires=['photutils', 'PyAstronomy', 'astropy'],
     entry_points={
-        'console_scripts': ['extraction_tools=extraction_tools:main'],
+        'console_scripts': ['extraction_tools=extraction_tools.extraction_tools:main'],
     }
 )
