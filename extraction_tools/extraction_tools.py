@@ -1,12 +1,13 @@
 """
 Tools to extract spectra of sources from a MUSE data cube
 """
-
+# imports
 import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
 from PyAstronomy import pyasl
+import os
 
 
 def read_MUSE(filename):
@@ -29,7 +30,22 @@ def read_MUSE(filename):
     return data, wave
 
 
-def run_dao_starfind(img, fwhm, threshold, sharplo=0.0):
+def write_fits(cube, filename, header, direct='./'):
+    '''
+    Write fits file to direct with filename and header.
+    The data will be in extension 0
+    '''
+    output_filename = direct + filename
+    hdu_prime = fits.PrimaryHDU(header=header)
+    hdu_prime.data = cube
+    hdul = fits.HDUList([hdu_prime])
+    if os.path.isfile(output_filename):
+        os.remove(output_filename)
+    print('Writing {0}'.format(output_filename))
+    hdul.writeto(output_filename)
+
+
+def run_dao_starfind(img, fwhm, threshold, sharplo=0.0, round=2):
     '''
     Wrapper around the DAOStarFinder routine
     '''
@@ -37,7 +53,7 @@ def run_dao_starfind(img, fwhm, threshold, sharplo=0.0):
     sources = daofind(img)
     x_dao = sources['xcentroid']
     y_dao = sources['ycentroid']
-    return np.round(x_dao, 2), np.round(y_dao, 2)  # can only use the pixel coordinates
+    return np.round(x_dao, round), np.round(y_dao, round)  # can only use the pixel coordinates
 
 
 def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=True):
@@ -63,6 +79,7 @@ def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=T
         Exception: description
 
     """
+    psf = fwhm/2.355
     x_dao, y_dao = run_dao_starfind(residual, psf, threshold, sharplo=sharplo)
 
     if plot:
@@ -85,7 +102,97 @@ def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=T
     return x_dao, y_dao
 
 
+def plot_spectrum(wave, spec, lam_range=None, save=False, output_direct='./', filename='spec_plot.png'):
+    """
+    Function to plot a spectrum
+
+    Args:
+        wave (array): wavelength array
+        spec (array): spectrum
+        lam_range (tuple): wavelength range to show. Default is None (full)
+        save (bool): saves the plot if set to true (default is false)
+        output_direct (str): path of where to save the plot
+        filename (str): filename of the saved file
+
+    """
+    fig, ax = plt.subplots(figsize=[10, 3])
+    ax.step(wave, spec)
+    ax.set_xlabel(r'$\lambda$ [$\rm{\AA}$]')
+    ax.set_ylabel('Flux')
+    if lam_range is not None:
+        ax.set_xlim(lam_range[0], lam_range[1])
+    else:
+        ax.set_xlim(wave[0], wave[-1])
+    if save:
+        filename = output_direct + filename
+        plt.savefig(filename, dpi=300)
+
+
 ######### Routines for the spectra extraction ####################################
+def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5):
+    """
+    The standard routine for extracting a spectrum from a MUSE cube with (or without background spectrum)
+    if psf is false, a circular aperture will be used. Otherwise, a Gaussian weighting will be applied
+    with fwhm = fwhm.
+    """
+    spec = aperture_spec(cube, x, y, r=r, psf=psf, sigma_psf=fwhm/2.355)
+    if bg:
+        spec_bg = aperture_annu_spec(cube, x, y, r1=r1, r2=r2)
+        return spec, spec_bg
+    else:
+        return spec
+
+
+def square_extraction(data, x1, x2, y1, y2):
+    """
+    Cut a full MUSE cube down to a little one between (x1, y1) and (x2, y2),
+    get a combined spectrum
+    """
+    cut_cube = data[:, y1:y2, x1:x2]
+    s = np.shape(cut_cube)
+    flat_cube = np.reshape(cut_cube, [s[0], s[1]*s[2]])
+    spec = np.nanmedian(flat_cube, axis=1)
+    return spec
+
+# def square_extraction(cube,)
+
+
+def aperture_ellip_annu_spec(cube, x, y, eps=0, PA=0, r1=10, delta_r=5, plot=False):
+    """
+    Annulus aperture spectra extraction
+
+    Extract the spectrum of a source at X, Y from the cube.
+    R1 and R2 give the inner and outer radius of the annulus
+
+    Args:
+        cube (ndarray): MUSE data cube
+        x (int): x-pixel centroid of the source
+        y (int): y-pixel centroid of the source
+        r1 (int): inner radius of the annulus (default is 10 pix)
+        r2 (int): outer radius of the annulus (default is 30 pix)
+
+    Returns:
+        array: spectrum of the source
+    """
+    # loop over wavelength
+    r2 = r1 + delta_r
+    spec = []
+    cut_cube = cube[:, int(y)-r2-1:int(y)+r2+1, int(x)-r2-1:int(x)+r2+1]
+    s = np.shape(cut_cube)
+    ellips = dist_ellipse(s[1]/2, s[2]/2, PA=PA, eps=eps, s=(s[1], s[2]))
+    mask_img = np.zeros_like(ellips)
+    mask_img[(ellips >= r1) & (ellips < r2)] = 1
+    #fig, ax = plt.subplots()
+    #ax.imshow(cut_cube[10, :, :]*masked_img_c)
+    for i in range(len(cut_cube[:, 0, 0])):
+        if i == 1000 and plot:
+            fig, ax = plt.subplots()
+            ax.imshow(cut_cube[i, :, :] * mask_img, origin='lower')
+        cut_out_i = cut_cube[i, :, :] * mask_img
+        cut_out_i[cut_out_i == 0] = np.nan
+        spec.append(np.nanmedian(cut_out_i))
+    return np.array(spec)
+
 
 def aperture_annu_spec(cube, x, y, r1=10, r2=30):
     """
@@ -106,17 +213,38 @@ def aperture_annu_spec(cube, x, y, r1=10, r2=30):
     """
     # loop over wavelength
     spec = []
-    cut_cube = cube[:, int(y)-r2-1:int(y)+r2+1, int(x)-r2-1:int(x)+r2+1]
+
+    cut_cube = cube[:, int(np.round(y))-r2-1:int(np.round(y))+r2+1,
+                    int(np.round(x))-r2-1:int(np.round(x))+r2+1]
     apertures = CircularAnnulus((x, y), r1, r2)
     masks = apertures.to_mask(method='center')
-    mask = masks[0]
+    #mask = masks[0]
+    mask = masks
     masked_img = mask.to_image(np.shape(cube[100, :, :]))
-    masked_img_c = masked_img[int(y)-r2-1:int(y)+r2+1, int(x)-r2-1:int(x)+r2+1]
+    masked_img_c = masked_img[int(np.round(y))-r2-1:int(np.round(y)) +
+                              r2+1, int(np.round(x))-r2-1:int(np.round(x))+r2+1]
+    #fig, ax = plt.subplots()
+    #ax.imshow(cut_cube[10, :, :]*masked_img_c)
     for i in range(len(cut_cube[:, 0, 0])):
         cut_out_i = cut_cube[i, :, :]*masked_img_c
         cut_out_i[cut_out_i == 0] = np.nan
         spec.append(np.nanmedian(cut_out_i))
     return np.array(spec)
+
+
+def dist_circle(xc, yc, s):
+    """
+    Returns an array in which the value of each element is its distance from
+    a specified center. Useful for masking inside a circular aperture.
+
+    The (xc, yc) coordinates are the ones one can read on the figure axes
+    e.g. when plotting the result of my find_galaxy() procedure.
+
+    FROM MGEFIT
+    """
+    x, y = np.ogrid[:s[0], :s[1]] - np.array([yc, xc])  # note yc before xc
+    rad = np.sqrt(x**2 + y**2)
+    return rad
 
 
 def aperture_spec(cube, x, y, r=10, psf=True, sigma_psf=3.5/2.35):
@@ -139,14 +267,15 @@ def aperture_spec(cube, x, y, r=10, psf=True, sigma_psf=3.5/2.35):
     Returns:
         array: spectrum of the source
     """
-    cut_cube = cube[:, int(y)-r:int(y)+r+1, int(x)-int(r):int(x) +
+    cut_cube = cube[:, int(np.round(y))-r:int(np.round(y))+r+1, int(np.round(x))-int(r):int(np.round(x)) +
                     r+1]  # Cut the cube near the source
     spec = []
     apertures = CircularAperture((x, y), r)  # uses photutils CircularAperture to create a aperture
     masks = apertures.to_mask(method='center')
-    mask = masks[0]
+    mask = masks
     masked_img = mask.to_image(np.shape(cube[100, :, :]))  # photutils mask
-    masked_img_c = masked_img[int(y)-r:int(y)+r+1, int(x)-int(r):int(x)+r+1]  # needed to get the size right
+    masked_img_c = masked_img[int(np.round(y))-r:int(np.round(y))+r+1,
+                              int(np.round(x))-int(r):int(np.round(x))+r+1]  # needed to get the size right
     if psf:
         # use the psf weighted extraction, but first create the psf weight mask
         psf_mask = gauss_2d(masked_img_c, r, sigma_psf)
@@ -183,10 +312,10 @@ def gauss_2d(img, r, sigma):
             gauss_img[y, x] = gauss_x[x] * gauss_y[y]  # could be optimized, but it is a small array
     return gauss_img
 
+    # ------------------ Signal to noise calculation ---------------------------------
 
-# ------------------ Signal to noise calculation ---------------------------------
 
-def calc_SNR(wave, spec, der=False):
+def calc_SNR(wave, spec, der=False, wavelim=[6020, 6500]):
     """
     Calculate the S/N ratio of a spectrum
 
@@ -203,7 +332,7 @@ def calc_SNR(wave, spec, der=False):
         float: Signal-to-noise ratio of the spectrum
     """
     if not der:  # the default case, uses pyAstronomy
-        mask = (wave > 6020) & (wave < 6500)  # continuum region of the spectrum
+        mask = (wave > wavelim[0]) & (wave < wavelim[1])  # continuum region of the spectrum
         snrEsti = pyasl.estimateSNR(wave[mask], spec[mask], 20, deg=3,
                                     controlPlot=False)  # PyAstronomy routine
         return snrEsti["SNR-Estimate"]
@@ -233,3 +362,20 @@ def der_snr(flux):
         return float(signal / noise)
     else:
         return 0.0
+
+
+# Stuff for masking
+
+
+def dist_ellipse(xc, yc, PA=69, eps=0.28, s=((444, 444))):
+    '''
+    Creates a new image that contains the semi major axis distance from the specified
+    centre at each pixel
+    '''
+    x, y = np.ogrid[:s[0], :s[1]] - np.array([yc, xc])  # note yc first
+    ang = np.radians(PA+90)
+    ratio = 1.0 - eps
+    xtemp = x*np.cos(ang) + y*np.sin(ang)
+    ytemp = -x*np.sin(ang) + y*np.cos(ang)
+    rad = np.sqrt(xtemp ** 2 + (ytemp/ratio)**2)
+    return rad
