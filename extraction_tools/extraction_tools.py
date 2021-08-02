@@ -1,4 +1,5 @@
 """
+Author: Katja Fahrion
 Tools to extract spectra of sources from a MUSE data cube
 """
 # imports
@@ -8,6 +9,7 @@ import matplotlib.pyplot as plt
 from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
 from PyAstronomy import pyasl
 import os
+import glob
 
 
 def read_MUSE(filename):
@@ -58,7 +60,7 @@ def run_dao_starfind(img, fwhm, threshold, sharplo=0.0, round=2):
 
 def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=True):
     """
-    Performs source finding on a residual
+    Performs source finding on a residual (or an image)
 
     Takes a resiudal image and uses photutils DAOStarFinder to look for
     sources
@@ -129,15 +131,32 @@ def plot_spectrum(wave, spec, lam_range=None, save=False, output_direct='./', fi
 
 
 ######### Routines for the spectra extraction ####################################
-def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5):
+def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5, var=False, eps=None, PA=None):
     """
     The standard routine for extracting a spectrum from a MUSE cube with (or without background spectrum)
     if psf is false, a circular aperture will be used. Otherwise, a Gaussian weighting will be applied
     with fwhm = fwhm.
     """
-    spec = aperture_spec(cube, x, y, r=r, psf=psf, sigma_psf=fwhm/2.355)
+    spec = aperture_spec(cube, x, y, r=r, psf=psf, sigma_psf=fwhm/2.355, var=var)
     if bg:
-        spec_bg = aperture_annu_spec(cube, x, y, r1=r1, r2=r2)
+        if eps is None:
+            spec_bg = aperture_annu_spec(cube, x, y, r1=r1, r2=r2, var=var)
+        else:
+            spec_bg = aperture_ellip_annu_spec(cube, x, y, r1=r1, r2=r2, PA=PA, eps=eps)
+        return spec, spec_bg
+    else:
+        return spec
+
+
+def extract_spectrum_no_var(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5):
+    """
+    The standard routine for extracting a spectrum from a MUSE cube with (or without background spectrum)
+    if psf is false, a circular aperture will be used. Otherwise, a Gaussian weighting will be applied
+    with fwhm = fwhm.
+    """
+    spec = aperture_spec_no_var(cube, x, y, r=r, psf=psf, sigma_psf=fwhm/2.355)
+    if bg:
+        spec_bg = aperture_annu_spec_no_var(cube, x, y, r1=r1, r2=r2)
         return spec, spec_bg
     else:
         return spec
@@ -157,7 +176,7 @@ def square_extraction(data, x1, x2, y1, y2):
 # def square_extraction(cube,)
 
 
-def aperture_ellip_annu_spec(cube, x, y, eps=0, PA=0, r1=10, delta_r=5, plot=False):
+def aperture_ellip_annu_spec(cube, x, y, eps=0, PA=0, r1=10, r2=30, plot=False):
     """
     Annulus aperture spectra extraction
 
@@ -175,7 +194,6 @@ def aperture_ellip_annu_spec(cube, x, y, eps=0, PA=0, r1=10, delta_r=5, plot=Fal
         array: spectrum of the source
     """
     # loop over wavelength
-    r2 = r1 + delta_r
     spec = []
     cut_cube = cube[:, int(y)-r2-1:int(y)+r2+1, int(x)-r2-1:int(x)+r2+1]
     s = np.shape(cut_cube)
@@ -194,7 +212,114 @@ def aperture_ellip_annu_spec(cube, x, y, eps=0, PA=0, r1=10, delta_r=5, plot=Fal
     return np.array(spec)
 
 
-def aperture_annu_spec(cube, x, y, r1=10, r2=30):
+def aperture_annu_spec(cube, x, y, r1=10, r2=30, var=False):
+    """
+    gets the spectrum in an annulus of inner radius r1 and outer radius r2
+    var = True for extraction from noise cube
+    """
+    # loop over wavelength
+    spec = []
+
+    cut_cube = cube[:, int(np.round(y))-r2-1:int(np.round(y))+r2+1,
+                    int(np.round(x))-r2-1:int(np.round(x))+r2+1]
+    apertures = CircularAnnulus((x, y), r1, r2)
+    masks = apertures.to_mask(method='center')
+    #mask = masks[0]
+    mask = masks
+    masked_img = mask.to_image(np.shape(cube[100, :, :]))
+    masked_img_c = masked_img[int(np.round(y))-r2-1:int(np.round(y)) +
+                              r2+1, int(np.round(x))-r2-1:int(np.round(x))+r2+1]
+    for i in range(len(cut_cube[:, 0, 0])):
+        cut_out_i = cut_cube[i, :, :]*masked_img_c
+        cut_out_i[cut_out_i == 0] = np.nan
+        spec.append(np.nanmedian(cut_out_i))
+    n = np.count_nonzero(~np.isnan(cut_out_i))
+    if not var:
+        return np.array(spec)
+    else:
+        return np.array(spec)/n
+
+
+def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, model_psf=None):
+    """
+    Aperture aperture spectra extraction
+
+    Extract the spectrum of a source at X, Y from the cube.
+    R gives the radius of the extraction.
+    If PSF is true, a Gaussian PSF with sigma_psf is used for
+    a weighted extraction
+
+    Args:
+        cube (ndarray): MUSE data cube
+        x (int): x-pixel centroid of the source
+        y (int): y-pixel centroid of the source
+        r (int): Radius of the circular aperture
+        psf (bool): If true, use psf weighted extraction
+        sigma_psf (float): sigma of the used PSF (in pixel)
+        model_psf: a model psf cube. Will only work with r=10
+
+    Returns:
+        array: spectrum of the source
+    """
+    # loop over wavelength
+    cut_cube = cube[:, int(np.round(y))-r:int(np.round(y))+r+1, int(np.round(x))-int(r):int(np.round(x)) +
+                    r+1]  # Cut the cube near the source
+    spec = []
+    # uses photutils CircularAperture to create a aperture
+    apertures = tools.CircularAperture((x, y), r)
+    masks = apertures.to_mask(method='center')
+    mask = masks
+    masked_img = mask.to_image(np.shape(cube[100, :, :]))  # photutils mask
+    masked_img_c = masked_img[int(np.round(y))-r:int(np.round(y))+r+1,
+                              int(np.round(x))-int(r):int(np.round(x))+r+1]
+    if psf:
+        # use the psf weighted extraction, but first create the psf weight mask
+        psf_mask = tools.gauss_2d(masked_img_c, r, sigma_psf)
+    else:
+        psf_mask = np.ones_like(masked_img_c)
+    for i in range(len(cut_cube[:, 0, 0])):
+        if not var:
+            if model_psf is not None:
+                # read model psf cube for the galaxy
+                # check if the size fits
+                shape = np.shape(model_psf[0, :, :])
+                if shape != np.shape(masked_img_c):
+                    print('shape mismatch!!')
+                psf_img = model_psf[i, :, :]
+            else:
+                psf_img = psf_mask
+            cut_out_i = cut_cube[i, :, :]*masked_img_c * psf_img
+
+            cut_out_i[cut_out_i == 0] = np.nan
+            if i == 1000:
+                fig, ax = plt.subplots(ncols=3, figsize=[13, 4])
+                ax[0].imshow(cut_cube[i, :, :]*masked_img_c)
+                ax[1].imshow(psf_img)
+                ax[2].imshow(psf_mask)
+            if psf:
+                spec.append(np.nansum(cut_out_i))
+            else:
+                spec.append(np.nanmedian(cut_out_i))
+        else:
+            if psf:
+                # this is because the weights get quard. for variance
+                cut_out_i = cut_cube[i, :, :]*masked_img_c*psf_mask**2
+                cut_out_i[cut_out_i == 0] = np.nan
+                spec.append(np.nansum(cut_out_i))
+            else:
+                cut_out_i = cut_cube[i, :, :]*masked_img_c
+                cut_out_i[cut_out_i == 0] = np.nan
+                spec.append(np.nanmedian(cut_out_i))
+    n = np.count_nonzero(~np.isnan(cut_out_i))  # number of valid pixels used in the extraction
+    if psf:
+        n = 1  # psf variance does not need the extra factor n
+    if not var:
+        return np.array(spec)
+    else:
+        return np.array(spec)/n
+
+
+def aperture_annu_spec_no_var(cube, x, y, r1=10, r2=30):
     """
     Annulus aperture spectra extraction
 
@@ -247,7 +372,7 @@ def dist_circle(xc, yc, s):
     return rad
 
 
-def aperture_spec(cube, x, y, r=10, psf=True, sigma_psf=3.5/2.35):
+def aperture_spec_no_var(cube, x, y, r=10, psf=True, sigma_psf=3.5/2.35):
     """
     Aperture aperture spectra extraction
 
