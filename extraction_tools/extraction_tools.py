@@ -1,6 +1,7 @@
 """
 Author: Katja Fahrion
 Tools to extract spectra of sources from a MUSE data cube
+On github
 """
 # imports
 import numpy as np
