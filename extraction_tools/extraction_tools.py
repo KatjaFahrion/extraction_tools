@@ -131,13 +131,14 @@ def plot_spectrum(wave, spec, lam_range=None, save=False, output_direct='./', fi
 
 
 ######### Routines for the spectra extraction ####################################
-def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5, var=False, eps=None, PA=None):
+def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5, var=False, eps=None, PA=None, model_psf=None):
     """
     The standard routine for extracting a spectrum from a MUSE cube with (or without background spectrum)
     if psf is false, a circular aperture will be used. Otherwise, a Gaussian weighting will be applied
     with fwhm = fwhm.
     """
-    spec = aperture_spec(cube, x, y, r=r, psf=psf, sigma_psf=fwhm/2.355, var=var)
+    spec = aperture_spec(cube, x, y, r=r, psf=psf, sigma_psf=fwhm /
+                         2.355, var=var, model_psf=model_psf)
     if bg:
         if eps is None:
             spec_bg = aperture_annu_spec(cube, x, y, r1=r1, r2=r2, var=var)
@@ -148,7 +149,7 @@ def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5
         return spec
 
 
-def extract_spectrum_no_var(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5):
+def extract_spectrum_no_var(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5, model_psf=None):
     """
     The standard routine for extracting a spectrum from a MUSE cube with (or without background spectrum)
     if psf is false, a circular aperture will be used. Otherwise, a Gaussian weighting will be applied
@@ -219,16 +220,30 @@ def aperture_annu_spec(cube, x, y, r1=10, r2=30, var=False):
     """
     # loop over wavelength
     spec = []
-
-    cut_cube = cube[:, int(np.round(y))-r2-1:int(np.round(y))+r2+1,
-                    int(np.round(x))-r2-1:int(np.round(x))+r2+1]
+    # check if the cut_cube hits the borders
+    s = np.shape(cube)
+    ymin, ymax = int(np.round(y))-r2-1, int(np.round(y))+r2+1
+    xmin, xmax = int(np.round(x))-r2-1, int(np.round(x))+r2+1
+    if ymax > s[1]:
+        #print('hitting ymax!')
+        ymax = s[1]-1
+    if xmin < 0:
+        #print('hitting xmin')
+        xmin = 0
+    if ymin < 0:
+        #print('hitting negative y!')
+        ymin = 0
+    if int(np.round(x))+r2+1 > s[2]:
+        xmax = s[2]-1
+    cut_cube = cube[:, ymin:ymax,
+                    xmin:xmax]
     apertures = CircularAnnulus((x, y), r1, r2)
     masks = apertures.to_mask(method='center')
     #mask = masks[0]
     mask = masks
     masked_img = mask.to_image(np.shape(cube[100, :, :]))
-    masked_img_c = masked_img[int(np.round(y))-r2-1:int(np.round(y)) +
-                              r2+1, int(np.round(x))-r2-1:int(np.round(x))+r2+1]
+    masked_img_c = masked_img[ymin:ymax, xmin:xmax]
+
     for i in range(len(cut_cube[:, 0, 0])):
         cut_out_i = cut_cube[i, :, :]*masked_img_c
         cut_out_i[cut_out_i == 0] = np.nan
@@ -266,15 +281,16 @@ def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, mo
                     r+1]  # Cut the cube near the source
     spec = []
     # uses photutils CircularAperture to create a aperture
-    apertures = tools.CircularAperture((x, y), r)
+    apertures = CircularAperture((x, y), r)
     masks = apertures.to_mask(method='center')
     mask = masks
     masked_img = mask.to_image(np.shape(cube[100, :, :]))  # photutils mask
     masked_img_c = masked_img[int(np.round(y))-r:int(np.round(y))+r+1,
                               int(np.round(x))-int(r):int(np.round(x))+r+1]
+
     if psf:
         # use the psf weighted extraction, but first create the psf weight mask
-        psf_mask = tools.gauss_2d(masked_img_c, r, sigma_psf)
+        psf_mask = gauss_2d(masked_img_c, r, sigma_psf)
     else:
         psf_mask = np.ones_like(masked_img_c)
     for i in range(len(cut_cube[:, 0, 0])):
@@ -287,15 +303,20 @@ def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, mo
                     print('shape mismatch!!')
                 psf_img = model_psf[i, :, :]
             else:
-                psf_img = psf_mask
+                if psf:
+                    psf_img = psf_mask
+                else:
+                    psf_img = np.ones_like(masked_img_c)
             cut_out_i = cut_cube[i, :, :]*masked_img_c * psf_img
 
             cut_out_i[cut_out_i == 0] = np.nan
+            '''
             if i == 1000:
                 fig, ax = plt.subplots(ncols=3, figsize=[13, 4])
                 ax[0].imshow(cut_cube[i, :, :]*masked_img_c)
                 ax[1].imshow(psf_img)
                 ax[2].imshow(psf_mask)
+            '''
             if psf:
                 spec.append(np.nansum(cut_out_i))
             else:
