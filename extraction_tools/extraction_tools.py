@@ -5,11 +5,12 @@ On github
 """
 # imports
 import numpy as np
-from astropy.io import fits
+from astropy.io import fits, ascii
 import matplotlib.pyplot as plt
 from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
 from PyAstronomy import pyasl
 import os
+from mpdaf.MUSE import FSFModel, MoffatModel2
 import glob
 
 
@@ -27,25 +28,24 @@ def read_MUSE(filename):
     """
     hdulist = fits.open(filename, menmap=True)
     data = hdulist[1].data
+    stat = hdulist[2].data
     hdr = hdulist[1].header
     s = np.shape(data)
     wave = hdr['CRVAL3']+(np.arange(s[0]))*hdr['CD3_3']
-    return data, wave
+    return data, stat, wave
 
 
 def write_fits(cube, filename, header, direct='./'):
     '''
     Write fits file to direct with filename and header.
-    The data will be in extension 0
+    The data will be in extension 1
     '''
     output_filename = direct + filename
-    hdu_prime = fits.PrimaryHDU(header=header)
-    hdu_prime.data = cube
-    hdul = fits.HDUList([hdu_prime])
-    if os.path.isfile(output_filename):
-        os.remove(output_filename)
+    hdu_prime = fits.PrimaryHDU()
+    hdu_image = fits.ImageHDU(header=header)
+    hdul = fits.HDUList([hdu_prime, hdu_image])
     print('Writing {0}'.format(output_filename))
-    hdul.writeto(output_filename)
+    hdul.writeto(output_filename, overwrite=True)
 
 
 def run_dao_starfind(img, fwhm, threshold, sharplo=0.0, round=2):
@@ -144,7 +144,8 @@ def extract_spectrum(cube, x, y, bg=True, r=10, r1=10, r2=30, psf=True, fwhm=3.5
         if eps is None:
             spec_bg = aperture_annu_spec(cube, x, y, r1=r1, r2=r2, var=var)
         else:
-            spec_bg = aperture_ellip_annu_spec(cube, x, y, r1=r1, r2=r2, PA=PA, eps=eps)
+            spec_bg = aperture_ellip_annu_spec(
+                cube, x, y, r1=r1, r2=r2, PA=PA, eps=eps)
         return spec, spec_bg
     else:
         return spec
@@ -256,6 +257,60 @@ def aperture_annu_spec(cube, x, y, r1=10, r2=30, var=False):
         return np.array(spec)/n
 
 
+def read_PSF_model(psf_file='/Users/katja.fahrion/Documents/Scripts/Nucleated_LTGs/PSF_models/ESO59_01_PSF_model.dat', wave=None, shape=(25, 25)):
+    """
+
+    Function to read in PSF model file (from MPDAF)
+    """
+    
+    PSF_tab = ascii.read(psf_file)
+    fwhm_coeffs = []
+    beta_coeffs = []
+    for name in PSF_tab.colnames:
+        if 'FWHM_COEFF' in name:
+            fwhm_coeffs.append(PSF_tab[name][0])
+        if 'BETA_COEFF' in name:
+            beta_coeffs.append(PSF_tab[name][0])
+
+    fsf = MoffatModel2(fwhm_pol=fwhm_coeffs, beta_pol=beta_coeffs,
+                       lbrange=[4700, 9300], pixstep=0.2)
+    fsfcube = fsf.get_3darray(wave, shape=shape)
+    return fsfcube
+
+
+def aperture_spec_MPDAF_PSF(cube, x, y, wave, r=10, var=False, psf_file='/Users/katja.fahrion/Documents/Scripts/Nucleated_LTGs/PSF_models/ESO59_01_PSF_model.dat'):
+    """
+    Aperture aperture spectra extraction
+
+    Extract the spectrum of a source at X, Y from the cube.
+    R gives the radius of the extraction.
+    Uses the MDAF PSF model written to file for a weighted extraction
+
+    Args:
+        cube (ndarray): MUSE data cube
+        x (int): x-pixel centroid of the source
+        y (int): y-pixel centroid of the source
+        r (int): Radius of the circular aperture
+        psf (bool): If true, use psf weighted extraction
+        sigma_psf (float): sigma of the used PSF (in pixel)
+        model_psf: a model psf cube. Will only work with r=10
+
+    Returns:
+        array: spectrum of the source
+    """
+    cut_cube = cube[:, int(np.round(y))-r:int(np.round(y))+r+1, int(np.round(x))-int(r):int(np.round(x)) +
+                    r+1]  # Cut the cube near the source
+    shape = np.shape(cut_cube[100, :, :])
+    PSF_cube = read_PSF_model(wave=wave, shape=shape, psf_file=psf_file)
+    # normalize PSF cube
+    # PSF_cube = PSF_cube / (np.nansum(PSF_cube, axis=(1, 2))[:, np.newaxis, np.newaxis])
+    if not var:
+        spec = np.nansum(PSF_cube * cut_cube, axis=(1, 2))
+    else:
+        spec = np.nansum(PSF_cube**2 * cut_cube, axis=(1, 2))
+    return spec
+
+
 def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, model_psf=None):
     """
     Aperture aperture spectra extraction
@@ -290,24 +345,27 @@ def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, mo
                               int(np.round(x))-int(r):int(np.round(x))+r+1]
 
     if psf:
+
         # use the psf weighted extraction, but first create the psf weight mask
-        psf_mask = gauss_2d(masked_img_c, r, sigma_psf)
+        if np.isscalar(sigma_psf):
+            scalar = True
+            psf_mask = gauss_2d(masked_img_c, r, sigma_psf)
+        else:
+            scalar = False
+            psf_mask = gauss_2d(masked_img_c, r, np.nanmedian(sigma_psf))
     else:
+        print('No PSF fit!')
+        scalar = False
         psf_mask = np.ones_like(masked_img_c)
     for i in range(len(cut_cube[:, 0, 0])):
         if not var:
-            if model_psf is not None:
-                # read model psf cube for the galaxy
-                # check if the size fits
-                shape = np.shape(model_psf[0, :, :])
-                if shape != np.shape(masked_img_c):
-                    print('shape mismatch!!')
-                psf_img = model_psf[i, :, :]
-            else:
-                if psf:
-                    psf_img = psf_mask
+            if psf:
+                if not np.isscalar(sigma_psf):
+                    psf_img = gauss_2d(masked_img_c, r, sigma_psf[i])
                 else:
-                    psf_img = np.ones_like(masked_img_c)
+                    psf_img = psf_mask
+            else:
+                psf_img = psf_mask
             cut_out_i = cut_cube[i, :, :]*masked_img_c * psf_img
 
             cut_out_i[cut_out_i == 0] = np.nan
@@ -324,6 +382,8 @@ def aperture_spec(cube, x, y, r=10,  var=False, psf=True, sigma_psf=3.5/2.35, mo
                 spec.append(np.nanmedian(cut_out_i))
         else:
             if psf:
+                if not scalar:
+                    psf_mask = gauss_2d(masked_img_c, r, sigma_psf[i])
                 # this is because the weights get quard. for variance
                 cut_out_i = cut_cube[i, :, :]*masked_img_c*psf_mask**2
                 cut_out_i[cut_out_i == 0] = np.nan
@@ -377,21 +437,6 @@ def aperture_annu_spec_no_var(cube, x, y, r1=10, r2=30):
         cut_out_i[cut_out_i == 0] = np.nan
         spec.append(np.nanmedian(cut_out_i))
     return np.array(spec)
-
-
-def dist_circle(xc, yc, s):
-    """
-    Returns an array in which the value of each element is its distance from
-    a specified center. Useful for masking inside a circular aperture.
-
-    The (xc, yc) coordinates are the ones one can read on the figure axes
-    e.g. when plotting the result of my find_galaxy() procedure.
-
-    FROM MGEFIT
-    """
-    x, y = np.ogrid[:s[0], :s[1]] - np.array([yc, xc])  # note yc before xc
-    rad = np.sqrt(x**2 + y**2)
-    return rad
 
 
 def aperture_spec_no_var(cube, x, y, r=10, psf=True, sigma_psf=3.5/2.35):
@@ -462,7 +507,7 @@ def gauss_2d(img, r, sigma):
     # ------------------ Signal to noise calculation ---------------------------------
 
 
-def calc_SNR(wave, spec, der=False, wavelim=[6020, 6500]):
+def calc_SNR(wave, spec, der=False, wavelim=[6400, 6500]):
     """
     Calculate the S/N ratio of a spectrum
 
@@ -480,9 +525,13 @@ def calc_SNR(wave, spec, der=False, wavelim=[6020, 6500]):
     """
     if not der:  # the default case, uses pyAstronomy
         mask = (wave > wavelim[0]) & (wave < wavelim[1])  # continuum region of the spectrum
-        snrEsti = pyasl.estimateSNR(wave[mask], spec[mask], 20, deg=3,
-                                    controlPlot=False)  # PyAstronomy routine
-        return snrEsti["SNR-Estimate"]
+        try:
+
+            snrEsti = pyasl.estimateSNR(wave[mask], spec[mask], 20, deg=3,
+                                        controlPlot=False)  # PyAstronomy routine
+            return snrEsti["SNR-Estimate"]
+        except:
+            return 0
     else:
         return der_snr(spec)
 
@@ -512,7 +561,6 @@ def der_snr(flux):
 
 
 # Stuff for masking
-
 
 def dist_ellipse(xc, yc, PA=69, eps=0.28, s=((444, 444))):
     '''
