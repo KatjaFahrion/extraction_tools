@@ -59,7 +59,8 @@ def run_dao_starfind(img, fwhm, threshold, sharplo=0.0, round=2):
     return np.round(x_dao, round), np.round(y_dao, round)  # can only use the pixel coordinates
 
 
-def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=True):
+def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, 
+                 plot=False, quiet=True, show_IDs=True):
     """
     Performs source finding on a residual (or an image)
 
@@ -99,6 +100,9 @@ def SourceFinder(residual, fwhm=3, threshold=3, sharplo=0.5, plot=False, quiet=T
         ax0.set_xlim(0, s[1])
         ax0.set_ylim(0, s[0])
         ax0.scatter(x_dao, y_dao, edgecolor='blue', facecolor='none')
+        if show_IDs:
+            for i in range(len(x_dao)):
+                ax0.annotate(i, (x_dao[i], y_dao[i]))
         plt.tight_layout()
     if not quiet:
         print('{0} sources found!'.format(len(x_dao)))

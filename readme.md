@@ -26,4 +26,4 @@ import extraction_tools as tools
 
 spectrum, background_spectrum = tools.extract_spectrum(cube, x, y)
 ```
-where cube is the MUSE datacube as a numpy array, x and y are the coordinates of the source. See the example jupyter notebook for more details and how to use additional parameters and other functions.
+where cube is the MUSE datacube as a numpy array, x and y are the coordinates of the source. See the jupyter notebook for example on how to use it in a workflow. Unfortunately without the data as MUSE cubes are too big to host here.
