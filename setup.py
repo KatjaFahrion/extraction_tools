@@ -5,7 +5,7 @@ setup(
     description="Tools to extract MUSE spectra of sources",
     license="MIT License",
     author="katja",
-    author_email="kfahrion@eso.org",
+    author_email="katja.fahrion@gmail.com",
     version="1.0.0",
     packages=find_packages(),
     install_requires=['photutils', 'PyAstronomy', 'astropy'],
