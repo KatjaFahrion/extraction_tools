@@ -7,7 +7,8 @@ On github
 import numpy as np
 from astropy.io import fits, ascii
 import matplotlib.pyplot as plt
-from photutils import DAOStarFinder, CircularAperture, CircularAnnulus
+from photutils.detection import DAOStarFinder
+from photutils.aperture import CircularAperture, CircularAnnulus
 from PyAstronomy import pyasl
 import os
 from mpdaf.MUSE import FSFModel, MoffatModel2
