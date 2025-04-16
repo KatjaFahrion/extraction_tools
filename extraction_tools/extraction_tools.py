@@ -33,7 +33,7 @@ def read_MUSE(filename):
     hdr = hdulist[1].header
     s = np.shape(data)
     wave = hdr['CRVAL3']+(np.arange(s[0]))*hdr['CD3_3']
-    return data, stat, wave
+    return data, stat, wave, hdr
 
 
 def write_fits(cube, filename, header, direct='./'):
